@@ -1,0 +1,12 @@
+infinitv_usbd is the user space linux driver for the Ceton InfiniTV USB. It
+opens any detected InfiniTV's, and reads from the MPEG endpoints (one per
+tuner). It then injects it onto the network using the linux TUN
+device so that the RTP/RTSP interface works seamlessly.
+
+To build from a fresh clone run:
+autoreconf -i
+./configure
+make
+
+
+
