@@ -4,19 +4,92 @@
 #include <gusb.h>
 #include <stdlib.h>
 
+#define READ_BUFFER_SIZE 512
+#define NUM_READ_BUFFERS 5
+#define NUM_TUNERS 4
+
+#define BASE_MPEG_EP 3
+
 typedef struct _infinitv_usbd_state infinitv_usbd_state_t;
+typedef struct _infinitv infinitv_t;
 
 typedef struct {
+    guchar buffer[READ_BUFFER_SIZE];
+    infinitv_t* in;
+    guchar ep;
+} read_buffer_t;
+
+struct _infinitv {
     infinitv_usbd_state_t* iu;
     GUsbDevice* device;
-} infinitv_t;
+    read_buffer_t buffers[NUM_TUNERS][NUM_READ_BUFFERS];
+};
 
-struct _infinitv_usbd_state  {
+struct _infinitv_usbd_state {
     GMainLoop* main_loop;
     GUsbContext* usb_context;
     GUsbDeviceList* usb_list;
     GPtrArray* devices;
 };
+
+static void
+data_ready(
+        GObject* source,
+        GAsyncResult* res,
+        gpointer user_data)
+{
+    GError* error = NULL;
+    read_buffer_t* rb = user_data;
+    infinitv_t* in = rb->in;
+    gssize len = g_usb_device_bulk_transfer_finish( in->device, res, &error );
+
+    if( error ) {
+        g_printerr("read failed on ep 0x%02x '%s'\n", rb->ep, error->message);
+        g_error_free( error );
+        //TODO remove device?
+        return;
+    }
+
+    g_print("got %d\n", len);
+
+    //TODO pack data into rtp packet
+    //TODO write data to TUN device
+    //
+    //resubmit
+    g_usb_device_bulk_transfer_async(
+            in->device,
+            rb->ep,
+            rb->buffer,
+            READ_BUFFER_SIZE,
+            0,
+            NULL,
+            data_ready,
+            rb);
+}
+
+static void
+submit_buffers(
+        infinitv_t* in)
+{
+    int i,j;
+    for( i=0; i<NUM_TUNERS; i++ ) {
+        for( j=0; j<NUM_READ_BUFFERS; j++ ) {
+            read_buffer_t* rb = &in->buffers[i][j];
+            rb->in = in;
+            rb->ep = 0x80 | ( BASE_MPEG_EP + i );
+            g_usb_device_bulk_transfer_async(
+                    in->device,
+                    rb->ep,
+                    rb->buffer,
+                    READ_BUFFER_SIZE,
+                    0,
+                    NULL,
+                    data_ready,
+                    rb);
+        }
+    }
+}
+    
 
 static void
 check_for_infinitv(
@@ -55,6 +128,8 @@ check_for_infinitv(
         infinitv_t* i = g_slice_new0( infinitv_t );
         i->iu = iu;
         i->device = device;
+
+        submit_buffers(i);
 
         g_ptr_array_add( iu->devices, iu );
     }
