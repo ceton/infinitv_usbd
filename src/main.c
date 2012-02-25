@@ -1,4 +1,5 @@
 #include "config.h"
+#include "inet_util.h"
 
 #define G_USB_API_IS_SUBJECT_TO_CHANGE
 #include <gusb.h>
@@ -20,9 +21,13 @@ typedef struct {
 } read_buffer_t;
 
 struct _infinitv {
+    guint number;
     infinitv_usbd_state_t* iu;
     GUsbDevice* device;
     read_buffer_t buffers[NUM_TUNERS][NUM_READ_BUFFERS];
+    gchar if_name[16];
+    GInetAddress* if_addr;
+    GSocket* rpc_socket;
 };
 
 struct _infinitv_usbd_state {
@@ -49,8 +54,6 @@ data_ready(
         //TODO remove device?
         return;
     }
-
-    g_print("got %d\n", len);
 
     //TODO pack data into rtp packet
     //TODO write data to TUN device
@@ -89,7 +92,27 @@ submit_buffers(
         }
     }
 }
-    
+
+static gboolean
+rpc_read(
+        GSocket* socket,
+        GIOCondition cond,
+        gpointer user_data)
+{
+    infinitv_t* it = user_data;
+    GSocketAddress* src;
+    gchar buf[1024];
+    if( cond == G_IO_IN ) {
+        gssize len = g_socket_receive_from( socket, &src, buf, sizeof(buf), NULL, NULL );
+        if( len > 0 ) {
+            g_print("rpc %d\n", len);
+        } else {
+            g_print("recv error %d\n", len);
+        }
+    }
+
+    return FALSE;
+}
 
 static void
 check_for_infinitv(
@@ -100,7 +123,7 @@ check_for_infinitv(
     guint16 vid = g_usb_device_get_vid( device );
     guint16 pid = g_usb_device_get_pid( device );
     if( vid == 0x2432 && pid == 0x0aa2 ) {
-        g_print("found infinitv\n");
+        g_print("found infinitv (%s)\n", g_usb_device_get_platform_id( device ));
 
         gboolean ret = g_usb_device_open( device, &error );
         if( !ret ) {
@@ -125,13 +148,54 @@ check_for_infinitv(
             return;
         }
 
-        infinitv_t* i = g_slice_new0( infinitv_t );
-        i->iu = iu;
-        i->device = device;
+        infinitv_t* it = g_slice_new0( infinitv_t );
+        it->number = 0;//TODO look up device number 
+        it->iu = iu;
+        it->device = device;
+        g_snprintf( it->if_name, 16, "usb%d", it->number );
 
-        submit_buffers(i);
+        submit_buffers(it);
 
-        g_ptr_array_add( iu->devices, iu );
+        int i;
+        GPtrArray* iis = list_inet_interfaces();
+        for( i=0; i<iis->len; i++ ) {
+            InetInterface* ii = g_ptr_array_index( iis, i );
+            if( strcmp( ii->name, it->if_name ) == 0 ) {
+                it->if_addr = g_object_ref( ii->addr );
+                break;
+            }
+        }
+        g_ptr_array_unref( iis );
+
+        if( !it->if_addr ) {
+            g_print("could not find network interface for infinitv\n");
+        } else {
+            GSocketAddress* sock_addr = g_inet_socket_address_new(it->if_addr, 3000);
+            it->rpc_socket = g_socket_new(G_SOCKET_FAMILY_IPV4,
+                    G_SOCKET_TYPE_DATAGRAM,
+                    G_SOCKET_PROTOCOL_UDP,
+                    &error);
+
+            if( error ) {
+                g_printerr("error creating rpc sock %s\n", error->message);
+                g_error_free( error );
+                error = NULL;
+            }
+
+            if( !g_socket_bind( it->rpc_socket, sock_addr, TRUE, &error ) ) {
+                g_printerr("error binding rpc sock %s\n", error->message);
+                g_error_free( error );
+                error = NULL;
+            }
+
+            GSource* source = g_socket_create_source( it->rpc_socket, G_IO_IN, NULL );
+            g_source_set_callback( source, (GSourceFunc)rpc_read, NULL, NULL );
+            g_source_attach( source, NULL );
+
+            g_object_unref( sock_addr );
+        }
+
+        g_ptr_array_add( iu->devices, it );
     }
 }
 
@@ -142,10 +206,6 @@ usb_device_list_added_cb(
         gpointer user_data)
 {
     infinitv_usbd_state_t* iu = user_data;
-    g_print("device %s added %x:%x\n",
-            g_usb_device_get_platform_id( device ),
-            g_usb_device_get_bus( device ),
-            g_usb_device_get_address( device ));
     check_for_infinitv(iu, device);
 }
 
@@ -205,6 +265,7 @@ int main(int argc, char** argv)
             iu);
 
     g_ptr_array_unref( devices );
+
 
     g_main_loop_run( iu->main_loop );
     return 0;
