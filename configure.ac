@@ -1,11 +1,11 @@
 m4_define([infinitv_usbd_major_version], [0])
 m4_define([infinitv_usbd_minor_version], [1])
-m4_define([infinitv_usbd_micro_version], [3])
+m4_define([infinitv_usbd_micro_version], [0])
 m4_define([infinitv_usbd_version],
           [infinitv_usbd_major_version.infinitv_usbd_minor_version.infinitv_usbd_micro_version])
 
 AC_PREREQ([2.63])
-AC_INIT([infinitv_usbd], [infinitv_usbd_version], [linux@cetoncorp.com])
+AC_INIT([infinitv-usbd], [infinitv_usbd_version], [linux@cetoncorp.com])
 AC_CONFIG_SRCDIR([src/main.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
